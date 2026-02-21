@@ -1,0 +1,32 @@
+[
+  {
+    "manager_id": "13266606",
+    "pipeline_id": 10348918,
+    "start_date": "2026-02-19",
+    "end_date": "2026-02-19",
+    "type": "manager",
+    "target_deals": 11,
+    "target_amount": 11,
+    "minimalka": 15,
+    "target_standart": 0,
+    "target_standart_plus": 0,
+    "target_premium": 0,
+    "target_vip": 0,
+    "target_people": 9
+  },
+  {
+    "manager_id": "0",
+    "pipeline_id": 10348918,
+    "start_date": "2026-02-19",
+    "end_date": "2026-02-19",
+    "type": "general",
+    "target_deals": 1111,
+    "target_amount": 1111,
+    "minimalka": 15,
+    "target_standart": 111,
+    "target_standart_plus": 11,
+    "target_premium": 111,
+    "target_vip": 11,
+    "target_people": 908
+  }
+]
