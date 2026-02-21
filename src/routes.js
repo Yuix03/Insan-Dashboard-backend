@@ -80,7 +80,7 @@ function buildDateFilter({ from, to, statusType }) {
 
 router.post('/login', (req, res) => {
     const { username, password } = req.body;
-    if (username === "admin" && password === "admin123") {
+    if (username === "InsanToshkent" && password === "Insan2026") {
         res.json({ success: true, message: "Welcome", user: { name: "Administrator" } });
     } else {
         res.status(401).json({ success: false });
@@ -615,3 +615,4 @@ router.delete('/plan/delete', (req, res) => {
 });
 
 export default router;
+
