@@ -1,11 +1,17 @@
 import express from 'express';
 import axios from 'axios';
 import fs from 'fs';
+import path from 'path';
 
 const router = express.Router();
-const AMO_DOMAIN = process.env.AMO_DOMAIN;
-const AMO_TOKEN = process.env.AMO_TOKEN;
-const PLANS_FILE = './plans.json';
+
+// Безопасное получение переменных (даже если они пока не заданы, сервер не упадет при запуске)
+const AMO_DOMAIN = process.env.AMO_DOMAIN || 'undefined_domain';
+const AMO_TOKEN = process.env.AMO_TOKEN || '';
+
+// Используем /tmp директорию для временных файлов на Render (меньше проблем с правами)
+// ВНИМАНИЕ: Файл будет очищаться при перезагрузке/сне сервера на бесплатном тарифе Render!
+const PLANS_FILE = process.env.RENDER ? '/tmp/plans.json' : './plans.json';
 
 const SUCCESS_STATUS_ID = 142; // Успешно
 const LOST_STATUS_ID = 143;    // Отказ
@@ -105,24 +111,12 @@ router.get('/kpi/leads', async (req, res) => {
         const queryTo = to ? Math.floor(Number(to)) : endOfToday;
         const nowTs = Math.floor(Date.now() / 1000);
 
-        // Переменные
-        let total = 0;
-        let sales = 0;
-        let salesAmount = 0;
-        let lost = 0;
-        let debtCount = 0;
-        let debtAmount = 0;
-        let overdueCount = 0;
-        let overdueAmount = 0;
-        let activeAvansAmount = 0;
-        
-        // Переменные для возвратов
-        let refundCount = 0;
-        let refundAmount = 0;
+        let total = 0, sales = 0, salesAmount = 0, lost = 0;
+        let debtCount = 0, debtAmount = 0, overdueCount = 0, overdueAmount = 0;
+        let activeAvansAmount = 0, refundCount = 0, refundAmount = 0;
 
         const isLaunchMode = mode === 'launch' || mode === 'mixed';
 
-        // 1. Загрузка сделок
         const fetchLeads = async (customFilter) => {
             let page = 1;
             let allLeads = [];
@@ -150,7 +144,6 @@ router.get('/kpi/leads', async (req, res) => {
 
         let leads = [];
         if (isLaunchMode) {
-            // 🔥 LAUNCH: Грузим активные + закрытые (142, 143) строго за период
             const activeLeads = await fetchLeads({});
             const closedLeads = await fetchLeads({
                 status: [SUCCESS_STATUS_ID, LOST_STATUS_ID],
@@ -158,7 +151,6 @@ router.get('/kpi/leads', async (req, res) => {
             });
             leads = [...activeLeads, ...closedLeads];
         } else {
-            // Standard: Грузим по дате создания
             leads = await fetchLeads(buildDateFilter({ from, to, statusType: 'created' }));
         }
 
@@ -178,7 +170,6 @@ router.get('/kpi/leads', async (req, res) => {
                     total++;
                     lost++;
 
-                    // 🔥 ПРОВЕРКА НА ВОЗВРАТ (Pulini qaytib oldi)
                     const reasonField = l.custom_fields_values?.find(f => Number(f.field_id) === REASON_RETURN_FIELD_ID);
                     if (reasonField?.values?.[0]?.enum_id === REASON_RETURN_ENUM_ID) {
                         refundCount++;
@@ -248,17 +239,8 @@ router.get('/kpi/leads', async (req, res) => {
         const totalIncome = salesAmount + activeAvansAmount;
 
         res.json({ 
-            total, 
-            sales, 
-            salesAmount, 
-            lost, 
-            debtCount, 
-            debtAmount,
-            overdueCount, 
-            overdueAmount,
-            totalIncome, 
-            refundCount,    // Количество возвратов
-            refundAmount,   // Сумма возвратов
+            total, sales, salesAmount, lost, debtCount, debtAmount, overdueCount, overdueAmount,
+            totalIncome, refundCount, refundAmount,
             conversion: total ? ((sales / total) * 100).toFixed(1) : 0, 
             avgCheck: sales ? Math.round(salesAmount / sales) : 0
         });
@@ -268,16 +250,13 @@ router.get('/kpi/leads', async (req, res) => {
     }
 });
 
-// =========================================================
-// ЕДИНЫЙ РОУТ ДЛЯ МАРКЕТИНГА (РЕШАЕТ ПРОБЛЕМУ ЛИМИТОВ AMO)
-// =========================================================
+// ЕДИНЫЙ РОУТ ДЛЯ МАРКЕТИНГА
 router.get('/marketing/analytics', async (req, res) => {
     try {
         const { from, to, pipeline_id, manager_id, status_type = 'all', global_mode } = req.query;
         if (!pipeline_id) return res.json({ sources: [], tarifs: [], regions: [], business: [], employees: [] });
 
         const selectedPipelineIds = String(pipeline_id).split(',').map(Number);
-
         const nowServer = new Date();
         const startOfToday = Math.floor(new Date(nowServer.getFullYear(), nowServer.getMonth(), nowServer.getDate()).getTime() / 1000);
         const endOfToday = Math.floor(new Date(nowServer.getFullYear(), nowServer.getMonth(), nowServer.getDate(), 23, 59, 59).getTime() / 1000);
@@ -287,7 +266,6 @@ router.get('/marketing/analytics', async (req, res) => {
         
         const isLaunchMode = global_mode === 'mixed' || global_mode === 'launch';
 
-        // Функция загрузки всех страниц
         const fetchAllPages = async (customFilter) => {
             let page = 1;
             let all = [];
@@ -300,7 +278,7 @@ router.get('/marketing/analytics', async (req, res) => {
                             ...getManagerFilter(manager_id),
                             ...customFilter
                         },
-                        with: 'contacts,source' // Загружаем сразу всё необходимое
+                        with: 'contacts,source'
                     };
                     const { data } = await amoSafeGet('/leads', { params });
                     const fetched = data?._embedded?.leads || [];
@@ -314,8 +292,6 @@ router.get('/marketing/analytics', async (req, res) => {
         };
 
         let rawLeads = [];
-
-        // 🔥 СОБИРАЕМ СДЕЛКИ ТОЧНО КАК В KPI
         if (isLaunchMode) {
             const activeLeads = await fetchAllPages({});
             const closedLeads = await fetchAllPages({
@@ -327,11 +303,9 @@ router.get('/marketing/analytics', async (req, res) => {
             rawLeads = await fetchAllPages({ created_at: { from: queryFrom, to: queryTo } });
         }
 
-        // Удаляем дубликаты
         const uniqueMap = new Map(rawLeads.map(l => [l.id, l]));
         const uniqueLeads = Array.from(uniqueMap.values());
 
-        // 🔥 ФИЛЬТРУЕМ ПО 4 ВКЛАДКАМ МАРКЕТИНГА (Umumiy, Real vaqt, Muvaffaqiyatli, Otkaz)
         const filteredLeads = uniqueLeads.filter(lead => {
             const pId = Number(lead.pipeline_id);
             const sId = Number(lead.status_id);
@@ -341,47 +315,32 @@ router.get('/marketing/analytics', async (req, res) => {
 
             const isClosedInPeriod = closedAt >= queryFrom && closedAt <= queryTo;
 
-            if (status_type === 'success') {
-                return sId === SUCCESS_STATUS_ID && isClosedInPeriod;
-            }
-            if (status_type === 'lost') {
-                return sId === LOST_STATUS_ID && isClosedInPeriod;
-            }
+            if (status_type === 'success') return sId === SUCCESS_STATUS_ID && isClosedInPeriod;
+            if (status_type === 'lost') return sId === LOST_STATUS_ID && isClosedInPeriod;
             if (status_type === 'realtime') {
                 const goalId = PIPELINE_GOALS[pId];
                 return isLaunchMode ? (sId === goalId) : (sId === SUCCESS_STATUS_ID && isClosedInPeriod);
             }
 
-            // 'all'
             if (isLaunchMode) {
                 if (sId === SUCCESS_STATUS_ID || sId === LOST_STATUS_ID) {
                     return isClosedInPeriod;
                 }
                 return true; 
             }
-            
             return true; 
         });
 
-        // 📊 СЧИТАЕМ АНАЛИТИКУ ПО ОТФИЛЬТРОВАННЫМ СДЕЛКАМ
-        const sources = {};
-        const tarifs = {};
-        const regions = {};
-        const business = {};
-        const employees = {};
-
+        const sources = {}; const tarifs = {}; const regions = {}; const business = {}; const employees = {};
         const contactMap = {};
 
         filteredLeads.forEach(l => {
-            // Источники
             const src = l._embedded?.source?.name || 'Noma’lum (Kiritilmagan)';
             sources[src] = (sources[src] || 0) + 1;
 
-            // Тарифы
             const trf = l.custom_fields_values?.find(f => Number(f.field_id) === TARIF_FIELD_ID)?.values?.[0]?.value || 'Noma’lum (Kiritilmagan)';
             tarifs[trf] = (tarifs[trf] || 0) + 1;
 
-            // Подготовка контактов
             const cId = l._embedded?.contacts?.[0]?.id;
             if (cId) contactMap[cId] = (contactMap[cId] || 0) + 1;
             else {
@@ -391,7 +350,6 @@ router.get('/marketing/analytics', async (req, res) => {
             }
         });
 
-        // Запрашиваем информацию по контактам (Регионы, Бизнес, Сотрудники)
         const ids = Object.keys(contactMap);
         if (ids.length > 0) {
             for (let i = 0; i < ids.length; i += 50) {
@@ -413,7 +371,6 @@ router.get('/marketing/analytics', async (req, res) => {
             }
         }
 
-        // Форматируем результат для отправки
         const formatData = (map) => Object.entries(map).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
 
         res.json({
@@ -433,9 +390,7 @@ router.get('/marketing/analytics', async (req, res) => {
     }
 });
 
-// =========================================================
 // 7. ВОРОНКА
-// =========================================================
 router.get('/dashboard/funnel', async (req, res) => {
     try {
         const { pipeline_id, manager_id } = req.query;
@@ -469,9 +424,7 @@ router.get('/dashboard/funnel', async (req, res) => {
     } catch (e) { res.status(500).json([]); }
 });
 
-// =========================================================
 // 8. СПРАВОЧНИКИ
-// =========================================================
 router.get('/pipelines', async (req, res) => {
     try {
         const { data } = await amoSafeGet('/leads/pipelines');
@@ -488,32 +441,30 @@ router.get('/managers', async (req, res) => {
     } catch (e) { res.json([]); }
 });
 
-// Функция чтения планов
+// =========================================================
+// 9. СОХРАНЕНИЕ ПЛАНОВ И СТАТУС (С ЗАЩИТОЙ ДЛЯ RENDER)
+// =========================================================
+
 const readPlans = () => {
     if (!fs.existsSync(PLANS_FILE)) return [];
     try {
-        return JSON.parse(fs.readFileSync(PLANS_FILE, 'utf-8'));
+        const raw = fs.readFileSync(PLANS_FILE, 'utf-8');
+        return JSON.parse(raw);
     } catch (e) {
         return [];
     }
 };
 
-// =========================================================
-// 9. СОХРАНЕНИЕ ПЛАНОВ И СТАТУС 
-// =========================================================
-
-// 🔥 ДОБАВЛЕН РОУТ СОХРАНЕНИЯ ПЛАНА (с новыми полями)
 router.post('/plan/save', (req, res) => {
     try {
         const { 
             manager_id, pipeline_id, start_date, end_date, 
             target_deals, target_amount, type, minimalka,
-            target_standart, target_standart_plus, target_premium, target_vip, // 🔥 Добавили target_standart_plus
-            target_people // 🔥 Поле "ОДАМ СОНИ"
+            target_standart, target_standart_plus, target_premium, target_vip,
+            target_people
         } = req.body;
 
         let plans = readPlans();
-        // Удаляем старый план этого менеджера на эту же дату (для обновления)
         plans = plans.filter(p => !(String(p.manager_id) === String(manager_id) && p.start_date === start_date));
 
         plans.push({ 
@@ -526,20 +477,20 @@ router.post('/plan/save', (req, res) => {
             target_amount: Number(target_amount || 0),
             minimalka: Number(minimalka || 15),
             target_standart: Number(target_standart || 0),
-            target_standart_plus: Number(target_standart_plus || 0), // 🔥 СОХРАНЯЕМ Standart Plus В JSON
+            target_standart_plus: Number(target_standart_plus || 0),
             target_premium: Number(target_premium || 0),
             target_vip: Number(target_vip || 0),
-            target_people: Number(target_people || 0) // 🔥 СОХРАНЯЕМ ОДАМ СОНИ В JSON
+            target_people: Number(target_people || 0)
         });
 
+        // Защита от ошибок записи на облачных хостингах
         fs.writeFileSync(PLANS_FILE, JSON.stringify(plans, null, 2));
         res.json({ success: true });
     } catch (error) { 
-        console.error("Plan save error:", error);
-        res.status(500).json({ success: false }); 
+        console.error("Plan save error (Возможно, нет прав на запись):", error);
+        res.status(500).json({ success: false, error: "Не удалось сохранить план" }); 
     }
 });
-
 
 router.get('/plan/status', async (req, res) => {
     try {
@@ -559,8 +510,6 @@ router.get('/plan/status', async (req, res) => {
             const goalStatusId = PIPELINE_GOALS[plan.pipeline_id];
             if (!goalStatusId) continue;
 
-            // 1. Загружаем ВСЕ сделки (с пагинацией)
-            // Мы грузим ВСЕ сделки воронки, чтобы посчитать и Продажи, и Долги
             let page = 1;
             let allLeads = [];
             while (true) {
@@ -584,7 +533,7 @@ router.get('/plan/status', async (req, res) => {
             let actual_deals = 0;
             let actual_amount = 0; 
             let actual_people = 0;
-            let total_remainder = 0; // 🔥 Сумма должников
+            let total_remainder = 0; 
             
             const tarif_stats = {
                 standart: { full: 0 },
@@ -599,7 +548,6 @@ router.get('/plan/status', async (req, res) => {
             allLeads.forEach(l => {
                 const statusId = Number(l.status_id);
                 
-                // --- ЛОГИКА ДОЛЖНИКОВ (Как в KPI) ---
                 if (DEBT_STATUSES.includes(statusId)) {
                     const debtField = l.custom_fields_values?.find(f => Number(f.field_id) === REMAINDER_FIELD_ID);
                     if (debtField?.values?.[0]) {
@@ -608,20 +556,13 @@ router.get('/plan/status', async (req, res) => {
                     }
                 }
 
-                // --- ЛОГИКА ПРОДАЖ И ТАРИФОВ ---
-                // Проверяем дату перехода (updated_at) для сделок в целевом этапе
                 const leadTime = l.updated_at * 1000;
-                
-                // Считаем продажи только если статус совпадает с целью
                 const isSale = (statusId === goalStatusId);
 
                 if (isSale && leadTime >= dateFrom && leadTime <= dateTo) {
                     actual_deals++;
-                    
-                    // Сумма берется как BUDGET (price)
                     actual_amount += Number(l.price || 0);
 
-                    // Анализ тарифов
                     const tarifFieldValue = l.custom_fields_values?.find(f => Number(f.field_id) === TARIF_FIELD_ID)?.values[0].value?.toLowerCase() || '';
                     let key = '';
                     let pCount = 1;
@@ -648,7 +589,7 @@ router.get('/plan/status', async (req, res) => {
                 actual_deals,
                 actual_amount,
                 actual_people,
-                total_remainder, // 🔥 Сумма всех долгов по воронке/менеджеру
+                total_remainder, 
                 tarif_stats,
                 progress_deals: plan.target_deals ? ((actual_deals / plan.target_deals) * 100).toFixed(1) : "0.0"
             });
@@ -662,11 +603,15 @@ router.get('/plan/status', async (req, res) => {
 });
 
 router.delete('/plan/delete', (req, res) => {
-    const { manager_id, start_date } = req.query;
-    let plans = readPlans();
-    plans = plans.filter(p => !(String(p.manager_id) === String(manager_id) && p.start_date === start_date));
-    fs.writeFileSync(PLANS_FILE, JSON.stringify(plans, null, 2));
-    res.json({ success: true });
+    try {
+        const { manager_id, start_date } = req.query;
+        let plans = readPlans();
+        plans = plans.filter(p => !(String(p.manager_id) === String(manager_id) && p.start_date === start_date));
+        fs.writeFileSync(PLANS_FILE, JSON.stringify(plans, null, 2));
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ success: false, error: "Не удалось удалить план" });
+    }
 });
 
 export default router;
